@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"os"
 )
  
 // ---------- Config ----------
@@ -264,7 +265,11 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 func main() {
 	http.HandleFunc("/api/user", handleGet)
 	http.HandleFunc("/api/borrow", handlePost)
-	addr := ":8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // fallback for local development
+	}
+	addr := ":" + port
 	log.Printf("mock server listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }

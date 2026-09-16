@@ -78,4 +78,33 @@ Covers happy-path GET/POST, borrow-limit rejection, and wrong-method (405) handl
 
 ## Data storage
 
-Currently in-memory (resets on restart/redeploy). Structured to swap in a real DB (e.g. PostgreSQL via Neon) later without changing the handler logic.
+Backed by PostgreSQL (hosted on [Neon](https://neon.tech)) — data persists across restarts and redeploys. Uses [pgx](https://github.com/jackc/pgx) for the database driver, with connection details read from the `DATABASE_URL` environment variable.
+
+### Schema
+
+```sql
+CREATE TABLE users (
+    user_id            INTEGER PRIMARY KEY,
+    username           TEXT NOT NULL,
+    location           TEXT NOT NULL,
+    salary             NUMERIC NOT NULL DEFAULT 3000,
+    amount_owed        NUMERIC NOT NULL DEFAULT 0,
+    email              TEXT,
+    phone_number       TEXT,
+    employment_status  TEXT,
+    credit_score       INTEGER,
+    occupation         TEXT,
+    marital_status     TEXT
+);
+```
+
+The extended columns (email, phone number, employment status, credit score, occupation, marital status) are mock data reserved for future endpoints — current GET/POST responses only expose `username`, `location`, `salary`, and `amount_owed`.
+
+### Running with your own database
+
+Set `DATABASE_URL` to a Postgres connection string before starting the server:
+
+```bash
+export DATABASE_URL="postgresql://user:password@host/dbname?sslmode=require"
+go run main.go
+```

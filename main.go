@@ -16,16 +16,18 @@
 package main
  
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
-	"sync"
-	"time"
 	"os"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
  
 // ---------- Config ----------
@@ -35,58 +37,83 @@ const borrowLimit = 200.0           // "if new amount owed above 200, no else ye
  
 // ---------- Data model ----------
  
-// User is the mock "database row" for a user. Swap this out for a real DB/Excel
-// lookup later; keep the same fields so handlers don't need to change.
+// User now includes the extended mock fields, ready for future endpoints
+// to expose them. Current GET/POST responses still only use the original fields.
 type User struct {
-	UserID     int
-	Username   string
-	Location   string
-	Salary     float64
-	AmountOwed float64
+	UserID           int
+	Username         string
+	Location         string
+	Salary           float64
+	AmountOwed       float64
+	Email            string
+	PhoneNumber      string
+	EmploymentStatus string
+	CreditScore      int
+	Occupation       string
+	MaritalStatus    string
 }
- 
-// userStore is a thread-safe in-memory store. Replace with a DB/Excel-backed
-// implementation later by giving that implementation the same Get/Save methods.
+
+// userStore now queries Postgres (Neon) instead of an in-memory map.
 type userStore struct {
-	mu    sync.Mutex
-	users map[int]*User
+	pool *pgxpool.Pool
 }
- 
+
 func newUserStore() *userStore {
-	s := &userStore{users: make(map[int]*User)}
-	// seed a couple of example users
-	s.users[1] = &User{UserID: 1, Username: "john", Location: "Singapore", Salary: 5000, AmountOwed: 0}
-	s.users[2] = &User{UserID: 2, Username: "mary", Location: "Kuala Lumpur", Salary: 4200, AmountOwed: 150}
-	return s
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is not set")
+	}
+
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		log.Fatalf("unable to connect to database: %v", err)
+	}
+	return &userStore{pool: pool}
 }
- 
-// Get returns the user, creating a default record if one doesn't exist yet
-// (handy for a mock server where any userid should "just work").
+
+// Get fetches a user by ID. If not found, it inserts a default mock row
+// (matching the old in-memory auto-create behavior) and returns it.
 func (s *userStore) Get(id int, username, location string) *User {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u, ok := s.users[id]
-	if !ok {
-		u = &User{
-			UserID:     id,
-			Username:   username,
-			Location:   location,
-			Salary:     3000, // default mock salary
-			AmountOwed: 0,
+	ctx := context.Background()
+	u := &User{}
+
+	row := s.pool.QueryRow(ctx, `
+		SELECT user_id, username, location, salary, amount_owed,
+		       COALESCE(email, ''), COALESCE(phone_number, ''),
+		       COALESCE(employment_status, ''), COALESCE(credit_score, 0),
+		       COALESCE(occupation, ''), COALESCE(marital_status, '')
+		FROM users WHERE user_id = $1`, id)
+
+	err := row.Scan(&u.UserID, &u.Username, &u.Location, &u.Salary, &u.AmountOwed,
+		&u.Email, &u.PhoneNumber, &u.EmploymentStatus, &u.CreditScore,
+		&u.Occupation, &u.MaritalStatus)
+
+	if err != nil {
+		// Not found — create a default mock user, same as the old in-memory fallback.
+		u = &User{UserID: id, Username: username, Location: location, Salary: 3000, AmountOwed: 0}
+		_, insertErr := s.pool.Exec(ctx, `
+			INSERT INTO users (user_id, username, location, salary, amount_owed)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (user_id) DO NOTHING`,
+			u.UserID, u.Username, u.Location, u.Salary, u.AmountOwed)
+		if insertErr != nil {
+			log.Printf("warning: failed to insert default user %d: %v", id, insertErr)
 		}
-		s.users[id] = u
 	}
 	return u
 }
- 
+
 func (s *userStore) Save(u *User) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users[u.UserID] = u
+	ctx := context.Background()
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users SET amount_owed = $1 WHERE user_id = $2`,
+		u.AmountOwed, u.UserID)
+	if err != nil {
+		log.Printf("warning: failed to save user %d: %v", u.UserID, err)
+	}
 }
- 
-var store = newUserStore()
- 
+
+var store = newUserStore() 
 // ---------- Shared helpers ----------
  
 // generateSecretKey = sha256(id + username + currentDate + secret)
